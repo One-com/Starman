@@ -13,13 +13,13 @@ my $file = File::ShareDir::dist_dir('Plack') . "/baybridge.jpg";
 my $app = sub {
     my $env = shift;
     my $body;
-    my $clen = $env->{CONTENT_LENGTH};
-    while ($clen > 0) {
-        $env->{'psgi.input'}->read(my $buf, $clen) or last;
-        $clen -= length $buf;
+
+    while (1) {
+        $env->{'psgi.input'}->read(my $buf, 2048) or last;
+        my $length = length $buf;
         $body .= $buf;
     }
-    return [ 200, [ 'Content-Type', 'text/plain', 'X-Content-Length', $env->{CONTENT_LENGTH} ], [ $body ] ];
+    return [ 200, [ 'Content-Type', 'text/plain', 'X-Content-Length', length $body ], [ $body ] ];
 };
 
 test_psgi $app, sub {

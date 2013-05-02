@@ -11,11 +11,13 @@ use HTTP::Date qw(time2str);
 use Symbol;
 
 use Plack::Util;
-use Plack::TempBuffer;
+use Plack::TempBuffer::PerlIO;
+use Starman::InputStream;
 
 use constant DEBUG        => $ENV{STARMAN_DEBUG} || 0;
 use constant CHUNKSIZE    => 64 * 1024;
 use constant READ_TIMEOUT => 5;
+use constant MAX_CONTENT_BUFFER_SIZE => 32 * 1024;
 
 my $null_io = do { open my $io, "<", \""; $io };
 
@@ -189,7 +191,7 @@ sub process_request {
             'psgi.multithread'  => Plack::Util::FALSE,
             'psgi.multiprocess' => Plack::Util::TRUE,
             'psgix.io'          => $conn,
-            'psgix.input.buffered' => Plack::Util::TRUE,
+            'psgix.input.buffered' => Plack::Util::FALSE,
             'psgix.harakiri' => Plack::Util::TRUE,
         };
 
@@ -254,6 +256,11 @@ sub process_request {
 
         # Run PSGI apps
         my $res = Plack::Util::run_app($self->{app}, $env);
+
+        # make sure that all of the message body has been read
+        if ( ref $env->{'psgi.input'} eq 'Plack::InputStream' ) {
+                $self->{client}->{inputbuf} = $env->{'psgi.input'}->finalize();
+        }
 
         if (ref $res eq 'CODE') {
             $res->(sub { $self->_finalize_response($env, $_[0]) });
@@ -379,20 +386,31 @@ sub _prepare_env {
     my $chunked = do { no warnings; lc delete $env->{HTTP_TRANSFER_ENCODING} eq 'chunked' };
 
     if (my $cl = $env->{CONTENT_LENGTH}) {
-        my $buf = Plack::TempBuffer->new($cl);
-        while ($cl > 0) {
-            my($chunk, $read) = $get_chunk->();
+        if ( $cl <= MAX_CONTENT_BUFFER_SIZE ) {
+            my $buf = Plack::TempBuffer::PerlIO->new;
 
-            if ( !defined $read || $read == 0 ) {
-                die "Read error: $!\n";
+            while ($cl > 0) {
+                my($chunk, $read) = $get_chunk->();
+
+                if ( !defined $read || $read == 0 ) {
+                    die "Read error: $!\n";
+                }
+
+                if ( $read > $cl ) {
+                    $self->{client}->{inputbuf} .= substr $chunk, $cl;
+                    $read = $cl;
+                }
+
+                $cl -= $read;
+                $buf->print($chunk);
             }
-
-            $cl -= $read;
-            $buf->print($chunk);
+            $env->{'psgi.input'} = $buf->rewind;
+        } else {
+            DEBUG && warn "[$$] current content $cl switching to InputStream::Identity\n";
+            $env->{'psgi.input'} = Starman::InputStream::Identity->new($self->{server}->{client}, $cl, (delete $self->{client}->{inputbuf})); 
         }
-        $env->{'psgi.input'} = $buf->rewind;
     } elsif ($chunked) {
-        my $buf = Plack::TempBuffer->new;
+        my $buf = Plack::TempBuffer::PerlIO->new;
         my $chunk_buffer = '';
         my $length;
 
@@ -419,7 +437,18 @@ sub _prepare_env {
             }
 
             last unless $read && $read > 0;
+
+            if ($length > MAX_CONTENT_BUFFER_SIZE) {
+                DEBUG && warn "[$$] current chunked length $length switching to InputStream::Chunked\n";
+
+                # reconstruct the chunked stream content recevied so far, this is more of a rework, but introduced to keep chunked decoding simpler
+                $self->{client}->{inputbuf} = sprintf( "%x", $buf->size ) . $CRLF . (delete $buf->{buffer}) . $CRLF . $chunk_buffer;
+                $env->{'psgi.input'} = Starman::InputStream::Chunked->new($self->{server}->{client}, (delete $self->{client}->{inputbuf}));
+                return;
+            }
+
         }
+        $self->{client}->{inputbuf} .= $chunk_buffer;
 
         $env->{CONTENT_LENGTH} = $length;
         $env->{'psgi.input'}   = $buf->rewind;
