@@ -11,7 +11,7 @@ sub finalize {
     my $buf='';
     while (1) { 
         my $read = $self->read($buf, $Starman::InputStream::CHUNKSIZE);
-        die "Read error\n" unless defined $read;
+        die "Read error: $!\n" unless defined $read;
         last if $read == 0;
     }
 
@@ -49,7 +49,7 @@ sub read {
         substr $_[1], $offset, $len, (substr $self->{inputbuf}, 0, $len, '');
     } else {
         $len = sysread $self->{socket}, $_[1], $len, $offset;
-        return unless defined $len; # io error, just return undef
+        die "Read error: $!\n" unless (defined $len);
     }
     
     $self->{length} -= $len;
@@ -110,8 +110,8 @@ sub read {
             }
         }
         my $read = sysread $self->{socket}, my($data), $Starman::InputStream::CHUNKSIZE;
+        die "Read error: $!\n" unless (defined $read);
 
-        return unless defined $read;
         $self->{inputbuf} .= $data;
     }
 }
