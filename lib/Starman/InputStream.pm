@@ -13,6 +13,7 @@ sub finalize {
         my $read = $self->read($buf, $Starman::InputStream::CHUNKSIZE);
         die "Read error: $!\n" unless defined $read;
         last if $read == 0;
+        $self->{inputbuf} .= $buf;
     }
 
     return $self->{inputbuf};
@@ -52,8 +53,10 @@ sub read {
         die "Read error: $!\n" unless (defined $len);
     }
     
+    # return undef, connection closed before the entire body was read
+    die "Read error: sysread error\n" if $len == 0 && $self->{length} != 0;
+
     $self->{length} -= $len;
-    return if $len == 0 && $self->{length} != 0; # return undef, connection closed before the entire body was read
     $self->{EOF} = 1 if $self->{length} == 0;
     return $len;
 }
@@ -110,7 +113,7 @@ sub read {
             }
         }
         my $read = sysread $self->{socket}, my($data), $Starman::InputStream::CHUNKSIZE;
-        die "Read error: $!\n" unless (defined $read);
+        die "Read error: $!\n" unless (defined $read || $read == 0);
 
         $self->{inputbuf} .= $data;
     }

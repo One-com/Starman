@@ -417,6 +417,10 @@ sub _prepare_env {
     DECHUNK:
         while (1) {
             my($chunk, $read) = $get_chunk->();
+            if ( !defined $read || $read == 0 ) {
+                die "Read error: $!\n";
+            }
+
             $chunk_buffer .= $chunk;
 
             while ( $chunk_buffer =~ s/^(([0-9a-fA-F]+).*\015\012)// ) {
